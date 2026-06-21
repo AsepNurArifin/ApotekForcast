@@ -1,5 +1,6 @@
 .venv
-data/
+data/raw/
+data/processed/
 testing/
 __pycache__/
 *.pyc
