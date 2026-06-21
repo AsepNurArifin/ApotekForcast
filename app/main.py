@@ -24,12 +24,13 @@ if css_path.exists():
 # ── SECTION 1: LOAD STATIC ASSETS ──────────────────────────────────────────
 @st.cache_resource
 def load_assets():
-    model    = joblib.load(r"C:\Users\Arifi\Desktop\FORECASTING OBAT\models\xgboost_best_model.joblib")
-    dataset  = pd.read_csv(r"C:\Users\Arifi\Desktop\FORECASTING OBAT\data\final\dataset_xgboost_ready.csv")
+    root = Path(__file__).parent.parent
+    model    = joblib.load(root / "models" / "xgboost_best_model.joblib")
+    dataset  = pd.read_csv(root / "data" / "final" / "dataset_xgboost_ready.csv")
     dataset['Tanggal'] = pd.to_datetime(dataset['Tanggal'])
-    sku_eval = pd.read_csv(r"C:\Users\Arifi\Desktop\FORECASTING OBAT\data\final\sku_evaluation.csv")
-    label    = pd.read_excel(r"C:\Users\Arifi\Desktop\FORECASTING OBAT\data\final\label.xlsx")
-    with open(r"C:\Users\Arifi\Desktop\FORECASTING OBAT\notebook\winsor_bounds.pkl", "rb") as f:
+    sku_eval = pd.read_csv(root / "data" / "final" / "sku_evaluation.csv")
+    label    = pd.read_excel(root / "data" / "final" / "label.xlsx")
+    with open(root / "notebook" / "winsor_bounds.pkl", "rb") as f:
         winsor_bounds = pickle.load(f)
     return model, dataset, sku_eval, label, winsor_bounds
 

@@ -1,3 +1,5 @@
 .venv
 data/
 testing/
+__pycache__/
+*.pyc
