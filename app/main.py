@@ -219,6 +219,7 @@ def update_features(df_new_raw, dataset_hist, label, winsor_bounds):
     # Winsorization pakai bounds dari training
     for col in ['Lag_1','Lag_2','Lag_3','Lag_4','Rolling_Mean_4']:
         if col in winsor_bounds:
+            latest[col] = latest[col].astype(float)
             for sku in latest['Kode Produk']:
                 if sku in winsor_bounds[col]:
                     ub   = winsor_bounds[col][sku]
@@ -228,7 +229,8 @@ def update_features(df_new_raw, dataset_hist, label, winsor_bounds):
     return latest
 
 # ── SECTION 4: DSS LOGIC ───────────────────────────────────────────────────
-def run_dss(latest_features, sku_eval, model, stok_df):
+def run_dss_fastmoving(latest_features, sku_eval, model, stok_df):
+    """DSS untuk 195 SKU fast-moving — XGBoost atau MA-4 per engine assignment."""
     results = []
 
     for _, row in latest_features.iterrows():
@@ -242,29 +244,91 @@ def run_dss(latest_features, sku_eval, model, stok_df):
         rmse_xgb = sku_info['RMSE_XGBoost'].values[0]
         rmse_ma4 = sku_info['RMSE_MA4'].values[0]
 
-        # Prediksi demand
         if engine == 'XGBoost':
-            pred   = float(model.predict(
-                pd.DataFrame([row[FEATURES]]))[0])
+            pred   = float(model.predict(pd.DataFrame([row[FEATURES]]))[0])
             rmse_e = rmse_xgb
         else:
             pred   = float(row['Rolling_Mean_4'])
             rmse_e = rmse_ma4
 
-        pred = max(0, round(pred, 2))
+        pred  = max(0, round(pred, 2))
+        ss    = round(Z * rmse_e, 2)
+        rop   = round(pred + ss, 2)
 
-        # Kalkulasi inventori
-        ss       = round(Z * rmse_e, 2)
-        rop      = round(pred + ss, 2)
         stok_row = stok_df[stok_df['Kode Produk'] == sku]
         stok     = float(stok_row['Stok_Aktual'].values[0]) \
                    if not stok_row.empty else 0.0
-        order    = round(max(0, rop - stok), 2)
-        alert    = stok < rop
+        order = round(max(0, rop - stok), 2)
+        alert = stok < rop
 
         results.append({
             'Kode Produk':  sku,
+            'Kategori':     'Fast-Moving',
             'Engine':       engine,
+            'Prediksi':     pred,
+            'Safety Stock': ss,
+            'ROP':          rop,
+            'Stok Aktual':  stok,
+            'Order Qty':    order,
+            'Alert':        alert
+        })
+
+    return pd.DataFrame(results)
+
+
+def run_dss_slowmoving(df_new_raw, label, stok_df, fast_moving_skus):
+    """DSS untuk 742 SKU slow-moving — MA-4 sederhana dari histori upload."""
+    label['cat_norm'] = label['Draf_Kategori'].str.strip().str.lower()
+    obat_skus = set(label[label['cat_norm'] == 'obat']['SKU'].dropna().unique())
+
+    # Hanya SKU obat yang bukan fast-moving
+    slow_skus = obat_skus - set(fast_moving_skus)
+
+    bulan_id = {
+        'Jan':'Jan','Feb':'Feb','Mar':'Mar','Apr':'Apr',
+        'Mei':'May','Jun':'Jun','Jul':'Jul','Agt':'Aug',
+        'Agu':'Aug','Sep':'Sep','Okt':'Oct','Nov':'Nov','Des':'Dec'
+    }
+    tanggal_raw = df_new_raw['Tanggal Transaksi'].astype(str)
+    tanggal_raw = tanggal_raw.str.replace(r'\s*pukul\s+[\d.:]+', '', regex=True)
+    for id_bln, en_bln in bulan_id.items():
+        tanggal_raw = tanggal_raw.str.replace(id_bln, en_bln, regex=False)
+    df_new_raw = df_new_raw.copy()
+    df_new_raw['Tanggal Transaksi'] = pd.to_datetime(
+        tanggal_raw, dayfirst=True, errors='coerce')
+    df_new_raw = df_new_raw.dropna(subset=['Tanggal Transaksi'])
+
+    df_slow = df_new_raw[df_new_raw['Kode Produk'].isin(slow_skus)].copy()
+
+    if df_slow.empty:
+        return pd.DataFrame()
+
+    # Agregasi mingguan
+    df_slow['week'] = df_slow['Tanggal Transaksi'].dt.to_period('W-MON')
+    weekly = df_slow.groupby(['Kode Produk','week'])['Jumlah'].sum().reset_index()
+
+    # MA-4 per SKU dari 4 minggu terakhir di upload
+    results = []
+    for sku, grp in weekly.groupby('Kode Produk'):
+        grp = grp.sort_values('week')
+        last4 = grp['Jumlah'].tail(4).values
+        pred  = round(float(np.mean(last4)), 2) if len(last4) > 0 else 0.0
+
+        # RMSE proxy untuk slow-moving: std dari histori (konservatif)
+        std   = float(np.std(last4)) if len(last4) > 1 else pred * 0.5
+        ss    = round(Z * std, 2)
+        rop   = round(pred + ss, 2)
+
+        stok_row = stok_df[stok_df['Kode Produk'] == sku]
+        stok     = float(stok_row['Stok_Aktual'].values[0]) \
+                   if not stok_row.empty else 0.0
+        order = round(max(0, rop - stok), 2)
+        alert = stok < rop
+
+        results.append({
+            'Kode Produk':  sku,
+            'Kategori':     'Slow-Moving',
+            'Engine':       'MA-4',
             'Prediksi':     pred,
             'Safety Stock': ss,
             'ROP':          rop,
@@ -278,12 +342,13 @@ def run_dss(latest_features, sku_eval, model, stok_df):
 # ── SECTION 5: MAIN UI ─────────────────────────────────────────────────────
 
 def render_kpi_cards(hasil_df):
-    """Render 4 KPI metric cards."""
     total_sku  = len(hasil_df)
     alert_cnt  = int(hasil_df['Alert'].sum())
     safe_cnt   = total_sku - alert_cnt
     xgb_cnt    = int((hasil_df['Engine'] == 'XGBoost').sum())
     ma4_cnt    = total_sku - xgb_cnt
+    fast_cnt   = int((hasil_df['Kategori'] == 'Fast-Moving').sum())
+    slow_cnt   = int((hasil_df['Kategori'] == 'Slow-Moving').sum())
 
     c1, c2, c3, c4 = st.columns(4)
 
@@ -293,6 +358,7 @@ def render_kpi_cards(hasil_df):
             <span class="kpi-icon">📦</span>
             <div class="kpi-value">{total_sku}</div>
             <div class="kpi-label">Total SKU Dianalisis</div>
+            <div class="kpi-sub">Fast: {fast_cnt} | Slow: {slow_cnt}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -318,7 +384,7 @@ def render_kpi_cards(hasil_df):
         st.markdown(f"""
         <div class="kpi-card kpi-slate kpi-delay-4">
             <span class="kpi-icon">🤖</span>
-            <div class="kpi-value">XGBoost: {xgb_cnt} &nbsp;|&nbsp; MA-4: {ma4_cnt}</div>
+            <div class="kpi-value">XGBoost: {xgb_cnt} | MA-4: {ma4_cnt}</div>
             <div class="kpi-label">Engine Breakdown</div>
         </div>
         """, unsafe_allow_html=True)
@@ -502,9 +568,13 @@ if file_transaksi and file_stok:
     df_new_raw = read_file(file_transaksi, file_type='transaksi')
     stok_df    = read_file(file_stok, file_type='stok')
 
+    fast_moving_skus = dataset['Kode Produk'].unique().tolist()
+
     with st.spinner("⏳ Memproses data dan menghitung prediksi..."):
-        latest   = update_features(df_new_raw, dataset, label, winsor_bounds)
-        hasil_df = run_dss(latest, sku_eval, model, stok_df)
+        latest      = update_features(df_new_raw, dataset, label, winsor_bounds)
+        hasil_fast  = run_dss_fastmoving(latest, sku_eval, model, stok_df)
+        hasil_slow  = run_dss_slowmoving(df_new_raw, label, stok_df, fast_moving_skus)
+        hasil_df    = pd.concat([hasil_fast, hasil_slow], ignore_index=True)
 
     if hasil_df.empty:
         st.error("Tidak ada hasil. Periksa file upload.")
@@ -596,13 +666,15 @@ if file_transaksi and file_stok:
                                   count=f'{len(hasil_df)} SKU')
 
             # Search and filters layout
-            c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
+            c_f1, c_f2, c_f3, c_f4 = st.columns([2, 1, 1, 1])
             with c_f1:
                 search_query = st.text_input("🔍 Cari berdasarkan Kode SKU:", "", key="search_sku_input")
             with c_f2:
                 filter_status = st.selectbox("🚦 Urgensi Stok:", ["Semua", "Perlu Order", "Aman"], key="filter_status_select")
             with c_f3:
                 filter_engine = st.selectbox("🤖 Model Peramal:", ["Semua", "XGBoost", "MA-4"], key="filter_engine_select")
+            with c_f4:
+                filter_kategori = st.selectbox("📊 Kategori:", ["Semua", "Fast-Moving", "Slow-Moving"], key="filter_kategori_select")
 
             full_display = add_status_column(hasil_df)
             full_display['Level Stok'] = hasil_df.apply(
@@ -622,8 +694,8 @@ if file_transaksi and file_stok:
             elif filter_status == "Aman":
                 filtered_df = filtered_df[filtered_df['Status'] == '🟢 AMAN']
 
-            if filter_engine != "Semua":
-                filtered_df = filtered_df[filtered_df['Engine'] == filter_engine]
+            if filter_kategori != "Semua":
+                filtered_df = filtered_df[filtered_df['Kategori'] == filter_kategori]
 
             st.dataframe(
                 filtered_df.sort_values('Order Qty', ascending=False),
