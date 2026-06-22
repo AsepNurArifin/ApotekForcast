@@ -32,9 +32,10 @@ def load_assets():
     label    = pd.read_excel(root / "data" / "final" / "label.xlsx")
     with open(root / "notebook" / "winsor_bounds.pkl", "rb") as f:
         winsor_bounds = pickle.load(f)
-    return model, dataset, sku_eval, label, winsor_bounds
+    sku_class = pd.read_csv(root / "data" / "final" / "sku_classification.csv")
+    return model, dataset, sku_eval, label, winsor_bounds, sku_class
 
-model, dataset, sku_eval, label, winsor_bounds = load_assets()
+model, dataset, sku_eval, label, winsor_bounds, sku_class = load_assets()
 
 FEATURES  = ['Lag_1','Lag_2','Lag_3','Lag_4',
              'Rolling_Mean_4','Bulan','Pekan_Ke','Rata_Historis_SKU']
@@ -263,7 +264,6 @@ def run_dss_fastmoving(latest_features, sku_eval, model, stok_df):
 
         results.append({
             'Kode Produk':  sku,
-            'Kategori':     'Fast-Moving',
             'Engine':       engine,
             'Prediksi':     pred,
             'Safety Stock': ss,
@@ -327,7 +327,6 @@ def run_dss_slowmoving(df_new_raw, label, stok_df, fast_moving_skus):
 
         results.append({
             'Kode Produk':  sku,
-            'Kategori':     'Slow-Moving',
             'Engine':       'MA-4',
             'Prediksi':     pred,
             'Safety Stock': ss,
@@ -426,13 +425,22 @@ def render_sku_scorecard(sku_sel, hasil_df):
     order = row['Order Qty']
     engine = row['Engine']
     alert = row['Alert']
+    nama = row.get('Nama Produk', '-')
+    kategori = row.get('Kategori', '-')
+    minggu_aktif = int(row.get('Minggu_Aktif', 0))
+    total_minggu = int(sku_class['Total_Minggu'].iloc[0]) if len(sku_class) > 0 else 57
 
     status_class = "sku-alert" if alert else "sku-safe"
     status_text = "🔴 PERLU ORDER" if alert else "🟢 STOK AMAN"
+    kat_badge_class = "badge-success" if kategori == "Fast-Moving" else "badge-warning"
 
     st.markdown(f"""
     <div class="sku-scorecard-container">
-        <div class="sku-scorecard-title">💊 SKU Terpilih: <strong>{sku_sel}</strong> &nbsp;|&nbsp; Status: <span class="badge {'badge-danger pulse' if alert else 'badge-success'}">{status_text}</span></div>
+        <div class="sku-scorecard-title">💊 <strong>{sku_sel}</strong> — {nama}
+            &nbsp;|&nbsp; <span class="badge {kat_badge_class}">{kategori}</span>
+            <span class="badge badge-info">Aktif {minggu_aktif}/{total_minggu} minggu</span>
+            &nbsp;|&nbsp; Status: <span class="badge {'badge-danger pulse' if alert else 'badge-success'}">{status_text}</span>
+        </div>
         <div class="sku-grid">
             <div class="sku-metric-card sku-info">
                 <div class="metric-label">Engine Peramal</div>
@@ -569,12 +577,37 @@ if file_transaksi and file_stok:
     stok_df    = read_file(file_stok, file_type='stok')
 
     fast_moving_skus = dataset['Kode Produk'].unique().tolist()
+    sku_to_nama = dict(zip(label['SKU'], label['Nama']))
 
     with st.spinner("⏳ Memproses data dan menghitung prediksi..."):
         latest      = update_features(df_new_raw, dataset, label, winsor_bounds)
         hasil_fast  = run_dss_fastmoving(latest, sku_eval, model, stok_df)
         hasil_slow  = run_dss_slowmoving(df_new_raw, label, stok_df, fast_moving_skus)
         hasil_df    = pd.concat([hasil_fast, hasil_slow], ignore_index=True)
+
+    # ── Hybrid: deteksi SKU baru yang tidak ada di baseline ────────────
+    sku_class_live = sku_class.copy()
+    existing_skus  = set(sku_class_live['Kode Produk'])
+    new_skus       = set(hasil_df['Kode Produk']) - existing_skus
+    if new_skus:
+        new_rows = pd.DataFrame({
+            'Kode Produk': list(new_skus),
+            'Minggu_Aktif': 0,
+            'Total_Minggu': int(sku_class_live['Total_Minggu'].iloc[0]),
+            'Threshold':    int(sku_class_live['Threshold'].iloc[0]),
+            'Kategori':     'Slow-Moving',
+            'Nama Produk':  [sku_to_nama.get(s, '-') for s in new_skus]
+        })
+        sku_class_live = pd.concat([sku_class_live, new_rows], ignore_index=True)
+
+    # Merge metadata klasifikasi ke hasil DSS
+    hasil_df = hasil_df.merge(
+        sku_class_live[['Kode Produk', 'Nama Produk', 'Kategori', 'Minggu_Aktif']],
+        on='Kode Produk', how='left'
+    )
+    hasil_df['Nama Produk']  = hasil_df['Nama Produk'].fillna('-')
+    hasil_df['Kategori']     = hasil_df['Kategori'].fillna('Slow-Moving')
+    hasil_df['Minggu_Aktif'] = hasil_df['Minggu_Aktif'].fillna(0).astype(int)
 
     if hasil_df.empty:
         st.error("Tidak ada hasil. Periksa file upload.")
@@ -593,6 +626,28 @@ if file_transaksi and file_stok:
 
         # ── TAB 1: RINGKASAN & ALERTS ──────────────────────────────────
         with tab_summary:
+            # Panel transparansi klasifikasi
+            total_minggu = int(sku_class['Total_Minggu'].iloc[0])
+            threshold    = int(sku_class['Threshold'].iloc[0])
+            fast_cnt     = int((hasil_df['Kategori'] == 'Fast-Moving').sum())
+            slow_cnt     = int((hasil_df['Kategori'] == 'Slow-Moving').sum())
+
+            with st.expander("ℹ️ Bagaimana Klasifikasi Fast/Slow Moving Ditentukan?", expanded=False):
+                st.markdown(f"""
+**Kriteria Klasifikasi:**
+- Histori transaksi mencakup **{total_minggu} minggu**
+- SKU aktif **≥ {threshold} minggu** → **Fast-Moving** ({fast_cnt} SKU)
+- SKU aktif **< {threshold} minggu** → **Slow-Moving** ({slow_cnt} SKU)
+- SKU baru (belum ada di histori) → otomatis **Slow-Moving**
+
+**Implikasi pada Engine Prediksi:**
+
+| Kategori | Engine | Penjelasan |
+|----------|--------|------------|
+| Fast-Moving | XGBoost / MA-4 | Dipilih per SKU berdasarkan RMSE terendah |
+| Slow-Moving | MA-4 | Rata-rata 4 minggu terakhir |
+                """)
+
             alert_df = hasil_df[hasil_df['Alert']].sort_values(
                 'Order Qty', ascending=False)
             
@@ -619,8 +674,8 @@ if file_transaksi and file_stok:
                     )
                     
                     # Reorder columns for visual balance
-                    cols = ['Kode Produk', 'Engine', 'Prediksi', 'Safety Stock', 'ROP', 'Stok Aktual', 'Level Stok', 'Order Qty', 'Status']
-                    alert_display = alert_display[cols]
+                    cols = ['Kode Produk', 'Nama Produk', 'Kategori', 'Engine', 'Prediksi', 'Safety Stock', 'ROP', 'Stok Aktual', 'Level Stok', 'Order Qty', 'Status']
+                    alert_display = alert_display[[c for c in cols if c in alert_display.columns]]
 
                     st.dataframe(
                         alert_display,
@@ -668,7 +723,7 @@ if file_transaksi and file_stok:
             # Search and filters layout
             c_f1, c_f2, c_f3, c_f4 = st.columns([2, 1, 1, 1])
             with c_f1:
-                search_query = st.text_input("🔍 Cari berdasarkan Kode SKU:", "", key="search_sku_input")
+                search_query = st.text_input("🔍 Cari SKU atau Nama Produk:", "", key="search_sku_input")
             with c_f2:
                 filter_status = st.selectbox("🚦 Urgensi Stok:", ["Semua", "Perlu Order", "Aman"], key="filter_status_select")
             with c_f3:
@@ -681,18 +736,24 @@ if file_transaksi and file_stok:
                 lambda r: min(100.0, (r['Stok Aktual'] / r['ROP']) * 100.0) if r['ROP'] > 0 else (100.0 if r['Stok Aktual'] > 0 else 0.0),
                 axis=1
             )
-            cols = ['Kode Produk', 'Engine', 'Prediksi', 'Safety Stock', 'ROP', 'Stok Aktual', 'Level Stok', 'Order Qty', 'Status']
-            full_display = full_display[cols]
+            cols = ['Kode Produk', 'Nama Produk', 'Kategori', 'Engine', 'Prediksi', 'Safety Stock', 'ROP', 'Stok Aktual', 'Level Stok', 'Order Qty', 'Status']
+            full_display = full_display[[c for c in cols if c in full_display.columns]]
 
             # Apply filters
             filtered_df = full_display.copy()
             if search_query:
-                filtered_df = filtered_df[filtered_df['Kode Produk'].str.contains(search_query, case=False)]
+                filtered_df = filtered_df[
+                    filtered_df['Kode Produk'].str.contains(search_query, case=False) |
+                    filtered_df['Nama Produk'].str.contains(search_query, case=False, na=False)
+                ]
             
             if filter_status == "Perlu Order":
                 filtered_df = filtered_df[filtered_df['Status'] == '🔴 PERLU ORDER']
             elif filter_status == "Aman":
                 filtered_df = filtered_df[filtered_df['Status'] == '🟢 AMAN']
+
+            if filter_engine != "Semua":
+                filtered_df = filtered_df[filtered_df['Engine'] == filter_engine]
 
             if filter_kategori != "Semua":
                 filtered_df = filtered_df[filtered_df['Kategori'] == filter_kategori]
@@ -738,9 +799,11 @@ if file_transaksi and file_stok:
         with tab_details:
             render_section_header('📈', 'Visualisasi & Detail SKU')
 
+            sku_to_nama_map = dict(zip(hasil_df['Kode Produk'], hasil_df['Nama Produk']))
             sku_sel = st.selectbox(
                 'Pilih Kode SKU untuk analisis mendalam:',
                 hasil_df['Kode Produk'].tolist(),
+                format_func=lambda x: f"{x} — {sku_to_nama_map.get(x, '-')}",
                 key="sku_select_combobox"
             )
 
@@ -754,8 +817,12 @@ if file_transaksi and file_stok:
             sku_rop = float(sku_row['ROP'].values[0]) if not sku_row.empty else None
             sku_ss  = float(sku_row['Safety Stock'].values[0]) if not sku_row.empty else None
 
-            # Display custom Plotly Trend Line
-            render_plotly_trend(sku_sel, sku_hist, sku_rop, sku_ss)
+            # Display custom Plotly Trend Line or info message
+            if sku_hist.empty:
+                st.info("📊 Histori tren mingguan tidak tersedia untuk SKU slow-moving. "
+                        "Prediksi dihitung dari data upload terbaru.")
+            else:
+                render_plotly_trend(sku_sel, sku_hist, sku_rop, sku_ss)
 
         # ── Footer ─────────────────────────────────────────────────────
         st.markdown("""
