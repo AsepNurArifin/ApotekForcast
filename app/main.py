@@ -38,39 +38,96 @@ def load_assets():
 model, dataset, sku_eval, label, winsor_bounds, sku_class = load_assets()
 
 FEATURES  = ['Lag_1','Lag_2','Lag_3','Lag_4',
-             'Rolling_Mean_4','Bulan','Pekan_Ke','Rata_Historis_SKU']
+            'Rolling_Mean_4','Bulan','Pekan_Ke','Rata_Historis_SKU']
 TARGET    = 'Jumlah'
 Z         = 1.65
 
-# ── SECTION 2: SIDEBAR & FILE UPLOAD ───────────────────────────────────────
-# Page Title
-st.markdown("""
-<div class="page-title"><h1>💊 DSS Prediksi Stok Obat</h1></div>
-<div class="page-subtitle">Sistem Pendukung Keputusan — Apotek Shaka Farma</div>
-""", unsafe_allow_html=True)
+# ── SIDEBAR & WORKFLOW PROGRESS ───────────────────────────────────────────
+# Header/Branding for Sidebar
+st.sidebar.markdown('<div class="sidebar-title">Alur Kerja Sistem</div>', unsafe_allow_html=True)
 
-# Sidebar branding
-st.sidebar.markdown("""
-<div class="sidebar-brand">
-    <span class="brand-icon">🏥</span>
-    <div class="brand-name">Apotek Shaka Farma</div>
-    <div class="brand-sub">Decision Support System v2.0</div>
+# Step-based workflow progress indicator
+def render_workflow_progress(current_step):
+    steps = [
+        ("Upload Histori Transaksi", 1),
+        ("Upload Stok Aktual", 2),
+        ("Validasi & Analisis Data", 3),
+        ("Prediksi Kebutuhan", 4),
+        ("Rekomendasi Restok", 5),
+        ("Analisis Detail SKU", 6)
+    ]
+    
+    html = '<div class="flow-step-container">'
+    for label, step_num in steps:
+        if step_num < current_step:
+            status_class = "completed"
+            icon = "✓"
+        elif step_num == current_step:
+            status_class = "active"
+            icon = "●"
+        else:
+            status_class = "pending"
+            icon = "○"
+        html += f'<div class="flow-step {status_class}"><span class="flow-step-num">{icon}</span><span>{label}</span></div>'
+    html += '</div>'
+    st.sidebar.markdown(html, unsafe_allow_html=True)
+
+# Define file uploaders with helpful cards detailing expected formats
+with st.sidebar.container(border=True):
+    st.markdown("""
+    <div class="upload-header">
+        <h4>1. Histori Transaksi</h4>
+        <p>File CSV / Excel berisi riwayat penjualan obat.</p>
+        <div class="upload-format-badge">Tanggal Transaksi | Kode Produk | Jumlah</div>
+    </div>
+    """, unsafe_allow_html=True)
+    file_transaksi = st.file_uploader(
+        "Upload Transaksi Terbaru",
+        type=["csv", "xlsx", "xls"],
+        label_visibility="collapsed",
+        key="uploader_transaksi"
+    )
+
+with st.sidebar.container(border=True):
+    st.markdown("""
+    <div class="upload-header">
+        <h4>2. Stok Aktual</h4>
+        <p>File CSV / Excel berisi sisa stok obat saat ini.</p>
+        <div class="upload-format-badge">SKU | Stok Total</div>
+    </div>
+    """, unsafe_allow_html=True)
+    file_stok = st.file_uploader(
+        "Upload Stok Aktual",
+        type=["csv", "xlsx", "xls"],
+        label_visibility="collapsed",
+        key="uploader_stok"
+    )
+
+# Render steps progress in sidebar
+if not file_transaksi:
+    render_workflow_progress(1)
+elif not file_stok:
+    render_workflow_progress(2)
+else:
+    render_workflow_progress(6)
+
+# Global Clean Header at the top
+st.markdown("""
+<div class="page-header-premium">
+    <div class="header-main-info">
+        <span class="header-tag">💊 Sistem Pendukung Keputusan</span>
+        <h1 class="header-title">Sistem Prediksi Restock Obat</h1>
+        <p class="header-description">Apotek Shaka Farma &mdash; Kelola persediaan obat menggunakan analitik prediktif cerdas</p>
+    </div>
+    <div class="header-meta">
+        <div class="meta-item">
+            <span class="meta-label">Status Sistem</span>
+            <span class="meta-value status-online">● Terhubung</span>
+        </div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown('<div class="sidebar-section-label">📂 Input Data</div>',
-                    unsafe_allow_html=True)
-
-file_transaksi = st.sidebar.file_uploader(
-    "Upload Transaksi Terbaru",
-    type=["csv", "xlsx", "xls"],
-    help="File CSV/Excel dari kasir apotek"
-)
-file_stok = st.sidebar.file_uploader(
-    "Upload Stok Aktual",
-    type=["csv", "xlsx", "xls"],
-    help="File CSV/Excel berisi SKU dan stok"
-)
 
 # ── HELPER: baca file CSV atau Excel ───────────────────────────────────────
 def read_file(uploaded_file, file_type='transaksi'):
@@ -258,7 +315,7 @@ def run_dss_fastmoving(latest_features, sku_eval, model, stok_df):
 
         stok_row = stok_df[stok_df['Kode Produk'] == sku]
         stok     = float(stok_row['Stok_Aktual'].values[0]) \
-                   if not stok_row.empty else 0.0
+                    if not stok_row.empty else 0.0
         order = round(max(0, rop - stok), 2)
         alert = stok < rop
 
@@ -339,52 +396,57 @@ def run_dss_slowmoving(df_new_raw, label, stok_df, fast_moving_skus):
     return pd.DataFrame(results)
 
 # ── SECTION 5: MAIN UI ─────────────────────────────────────────────────────
-
 def render_kpi_cards(hasil_df):
     total_sku  = len(hasil_df)
     alert_cnt  = int(hasil_df['Alert'].sum())
     safe_cnt   = total_sku - alert_cnt
-    xgb_cnt    = int((hasil_df['Engine'] == 'XGBoost').sum())
-    ma4_cnt    = total_sku - xgb_cnt
-    fast_cnt   = int((hasil_df['Kategori'] == 'Fast-Moving').sum())
-    slow_cnt   = int((hasil_df['Kategori'] == 'Slow-Moving').sum())
+    
+    # Calculate high risk stockout (Stok Aktual < Safety Stock AND alert == True)
+    high_risk_cnt = int(((hasil_df['Alert']) & (hasil_df['Stok Aktual'] <= hasil_df['Safety Stock'])).sum())
+    
+    # Estimated Weekly Demand (sum of predictions)
+    est_demand = int(hasil_df['Prediksi'].sum())
 
     c1, c2, c3, c4 = st.columns(4)
+    st.markdown('<div style="margin-bottom: 4px"></div>', unsafe_allow_html=True)
 
     with c1:
         st.markdown(f"""
-        <div class="kpi-card kpi-cyan kpi-delay-1">
+        <div class="kpi-card kpi-blue">
             <span class="kpi-icon">📦</span>
             <div class="kpi-value">{total_sku}</div>
             <div class="kpi-label">Total SKU Dianalisis</div>
-            <div class="kpi-sub">Fast: {fast_cnt} | Slow: {slow_cnt}</div>
+            <div class="kpi-sub">Kebutuhan stok terdata</div>
         </div>
         """, unsafe_allow_html=True)
 
     with c2:
         st.markdown(f"""
-        <div class="kpi-card kpi-red kpi-delay-2">
+        <div class="kpi-card kpi-red">
             <span class="kpi-icon">🚨</span>
             <div class="kpi-value">{alert_cnt}</div>
-            <div class="kpi-label">SKU Perlu Order</div>
+            <div class="kpi-label">Perlu Restok</div>
+            <div class="kpi-sub">{high_risk_cnt} Kritis / Habis</div>
         </div>
         """, unsafe_allow_html=True)
 
     with c3:
         st.markdown(f"""
-        <div class="kpi-card kpi-green kpi-delay-3">
+        <div class="kpi-card kpi-green">
             <span class="kpi-icon">✅</span>
             <div class="kpi-value">{safe_cnt}</div>
-            <div class="kpi-label">SKU Stok Aman</div>
+            <div class="kpi-label">Stok Aman</div>
+            <div class="kpi-sub">Memenuhi kebutuhan</div>
         </div>
         """, unsafe_allow_html=True)
 
     with c4:
         st.markdown(f"""
-        <div class="kpi-card kpi-slate kpi-delay-4">
-            <span class="kpi-icon">🤖</span>
-            <div class="kpi-value">XGBoost: {xgb_cnt} | MA-4: {ma4_cnt}</div>
-            <div class="kpi-label">Engine Breakdown</div>
+        <div class="kpi-card kpi-slate">
+            <span class="kpi-icon">📈</span>
+            <div class="kpi-value">{est_demand} Unit</div>
+            <div class="kpi-label">Estimasi Demand</div>
+            <div class="kpi-sub">Pekan depan (total)</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -435,36 +497,36 @@ def render_sku_scorecard(sku_sel, hasil_df):
     kat_badge_class = "badge-success" if kategori == "Fast-Moving" else "badge-warning"
 
     st.markdown(f"""
-    <div class="sku-scorecard-container">
-        <div class="sku-scorecard-title">💊 <strong>{sku_sel}</strong> — {nama}
-            &nbsp;|&nbsp; <span class="badge {kat_badge_class}">{kategori}</span>
-            <span class="badge badge-info">Aktif {minggu_aktif}/{total_minggu} minggu</span>
-            &nbsp;|&nbsp; Status: <span class="badge {'badge-danger pulse' if alert else 'badge-success'}">{status_text}</span>
-        </div>
-        <div class="sku-grid">
-            <div class="sku-metric-card sku-info">
-                <div class="metric-label">Engine Peramal</div>
-                <div class="metric-val">{engine}</div>
-                <div class="metric-sub">Model prediktif terpilih</div>
-            </div>
-            <div class="sku-metric-card">
-                <div class="metric-label">Prediksi Demand</div>
-                <div class="metric-val">{pred:.1f}</div>
-                <div class="metric-sub">Prediksi terjual pekan depan</div>
-            </div>
-            <div class="sku-metric-card sku-warning">
-                <div class="metric-label">Safety Stock & ROP</div>
-                <div class="metric-val">{ss:.1f} | {rop:.1f}</div>
-                <div class="metric-sub">Batas aman reorder point</div>
-            </div>
-            <div class="sku-metric-card {status_class}">
-                <div class="metric-label">Stok Aktual & Order</div>
-                <div class="metric-val">{stok:.0f} → +{order:.0f}</div>
-                <div class="metric-sub">Stok saat ini & saran order</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class="sku-scorecard-container">
+<div class="sku-scorecard-title">💊 <strong>{sku_sel}</strong> — {nama}
+&nbsp;|&nbsp; <span class="badge {kat_badge_class}">{kategori}</span>
+<span class="badge badge-info">Aktif {minggu_aktif}/{total_minggu} minggu</span>
+&nbsp;|&nbsp; Status: <span class="badge {'badge-danger' if alert else 'badge-success'}">{status_text}</span>
+</div>
+<div class="sku-grid">
+<div class="sku-metric-card sku-info">
+<div class="metric-label">Engine Peramal</div>
+<div class="metric-val">{engine}</div>
+<div class="metric-sub">Model prediktif terpilih</div>
+</div>
+<div class="sku-metric-card">
+<div class="metric-label">Prediksi Demand</div>
+<div class="metric-val">{pred:.1f}</div>
+<div class="metric-sub">Prediksi terjual pekan depan</div>
+</div>
+<div class="sku-metric-card sku-warning">
+<div class="metric-label">Safety Stock & ROP</div>
+<div class="metric-val">{ss:.1f} | {rop:.1f}</div>
+<div class="metric-sub">Batas aman reorder point</div>
+</div>
+<div class="sku-metric-card {status_class}">
+<div class="metric-label">Stok Aktual & Order</div>
+<div class="metric-val">{stok:.0f} → +{order:.0f}</div>
+<div class="metric-sub">Stok saat ini & saran order</div>
+</div>
+</div>
+</div>
+""", unsafe_allow_html=True)
 
 
 def render_plotly_trend(sku_sel, sku_hist, sku_rop=None, sku_ss=None):
@@ -475,8 +537,8 @@ def render_plotly_trend(sku_sel, sku_hist, sku_rop=None, sku_ss=None):
     fig.add_trace(go.Scatter(
         x=sku_hist['Tanggal'], y=sku_hist['Jumlah'],
         fill='tozeroy',
-        fillcolor='rgba(16, 185, 129, 0.08)',
-        line=dict(color='rgba(16, 185, 129, 0)', width=0),
+        fillcolor='rgba(37, 99, 235, 0.04)',
+        line=dict(color='rgba(37, 99, 235, 0)', width=0),
         showlegend=False, hoverinfo='skip'
     ))
 
@@ -485,45 +547,45 @@ def render_plotly_trend(sku_sel, sku_hist, sku_rop=None, sku_ss=None):
         x=sku_hist['Tanggal'], y=sku_hist['Jumlah'],
         mode='lines+markers',
         name='Penjualan Mingguan',
-        line=dict(color='#10B981', width=2.5, shape='spline'),
-        marker=dict(size=7, color='#10B981',
-                    line=dict(width=2, color='#0F172A')),
+        line=dict(color='#2563EB', width=2.5, shape='spline'),
+        marker=dict(size=7, color='#2563EB',
+                    line=dict(width=2, color='#FFFFFF')),
         hovertemplate='<b>%{x|%d %b %Y}</b><br>Jumlah: %{y}<extra></extra>'
     ))
 
     # ROP reference line
     if sku_rop is not None:
         fig.add_hline(
-            y=sku_rop, line_dash='dash', line_color='#EF4444', line_width=1.5,
+            y=sku_rop, line_dash='dash', line_color='#DC2626', line_width=1.5,
             annotation_text=f'ROP ({sku_rop})',
             annotation_position='top right',
-            annotation_font=dict(color='#EF4444', size=11)
+            annotation_font=dict(color='#DC2626', size=11)
         )
 
     # Safety Stock reference line
     if sku_ss is not None:
         fig.add_hline(
-            y=sku_ss, line_dash='dot', line_color='#F59E0B', line_width=1,
+            y=sku_ss, line_dash='dot', line_color='#D97706', line_width=1,
             annotation_text=f'Safety Stock ({sku_ss})',
             annotation_position='bottom right',
-            annotation_font=dict(color='#F59E0B', size=11)
+            annotation_font=dict(color='#D97706', size=11)
         )
 
     fig.update_layout(
-        template='plotly_dark',
+        template='plotly_white',
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Inter, sans-serif', color='#94A3B8'),
+        font=dict(family='Inter, sans-serif', color='#475569'),
         title=dict(
             text=f'Tren Penjualan Mingguan — {sku_sel}',
-            font=dict(size=16, color='#F1F5F9')
+            font=dict(size=14, color='#1E293B')
         ),
         xaxis=dict(
-            title='Minggu', gridcolor='rgba(148,163,184,0.08)',
+            title='Minggu', gridcolor='#E2E8F0',
             tickformat='%d %b %y'
         ),
         yaxis=dict(
-            title='Jumlah Terjual', gridcolor='rgba(148,163,184,0.08)'
+            title='Jumlah Terjual', gridcolor='#E2E8F0'
         ),
         margin=dict(l=40, r=20, t=50, b=40),
         height=380,
@@ -531,44 +593,44 @@ def render_plotly_trend(sku_sel, sku_hist, sku_rop=None, sku_ss=None):
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
     )
 
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def render_engine_donut(hasil_df):
     """Render engine distribution donut chart."""
     engine_counts = hasil_df['Engine'].value_counts()
-    colors = ['#10B981', '#06B6D4']
+    colors = ['#2563EB', '#14B8A6']
 
     fig = go.Figure(data=[go.Pie(
         labels=engine_counts.index,
         values=engine_counts.values,
         hole=0.55,
-        marker=dict(colors=colors, line=dict(color='#0F172A', width=2)),
+        marker=dict(colors=colors, line=dict(color='#FFFFFF', width=2)),
         textinfo='label+value',
-        textfont=dict(size=12, color='#F1F5F9'),
+        textfont=dict(size=11, color='#1E293B'),
         hovertemplate='<b>%{label}</b><br>Jumlah: %{value}<br>(%{percent})<extra></extra>'
     )])
 
     fig.update_layout(
-        template='plotly_dark',
+        template='plotly_white',
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Inter, sans-serif', color='#94A3B8'),
+        font=dict(family='Inter, sans-serif', color='#475569'),
         title=dict(
             text='Distribusi Engine Prediksi',
-            font=dict(size=14, color='#F1F5F9')
+            font=dict(size=13, color='#1E293B')
         ),
-        height=260,
+        height=300,
         margin=dict(l=20, r=20, t=50, b=20),
         showlegend=False,
         annotations=[dict(
             text=f'<b>{len(hasil_df)}</b><br>SKU',
-            x=0.5, y=0.5, font_size=16, font_color='#F1F5F9',
+            x=0.5, y=0.5, font_size=16, font_color='#1E293B',
             showarrow=False
         )]
     )
 
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ── MAIN FLOW ──────────────────────────────────────────────────────────────
@@ -614,8 +676,7 @@ if file_transaksi and file_stok:
     else:
         # ── KPI Cards ──────────────────────────────────────────────────
         render_kpi_cards(hasil_df)
-
-        st.markdown('<div style="height: 12px"></div>', unsafe_allow_html=True)
+        st.markdown('<div style="height: 8px"></div>', unsafe_allow_html=True)
 
         # ── Tabbed Interface ───────────────────────────────────────────
         tab_summary, tab_recs, tab_details = st.tabs([
@@ -626,37 +687,38 @@ if file_transaksi and file_stok:
 
         # ── TAB 1: RINGKASAN & ALERTS ──────────────────────────────────
         with tab_summary:
-            # Panel transparansi klasifikasi
-            total_minggu = int(sku_class['Total_Minggu'].iloc[0])
-            threshold    = int(sku_class['Threshold'].iloc[0])
-            fast_cnt     = int((hasil_df['Kategori'] == 'Fast-Moving').sum())
-            slow_cnt     = int((hasil_df['Kategori'] == 'Slow-Moving').sum())
-
-            with st.expander("ℹ️ Bagaimana Klasifikasi Fast/Slow Moving Ditentukan?", expanded=False):
-                st.markdown(f"""
-**Kriteria Klasifikasi:**
-- Histori transaksi mencakup **{total_minggu} minggu**
-- SKU aktif **≥ {threshold} minggu** → **Fast-Moving** ({fast_cnt} SKU)
-- SKU aktif **< {threshold} minggu** → **Slow-Moving** ({slow_cnt} SKU)
-- SKU baru (belum ada di histori) → otomatis **Slow-Moving**
-
-**Implikasi pada Engine Prediksi:**
-
-| Kategori | Engine | Penjelasan |
-|----------|--------|------------|
-| Fast-Moving | XGBoost / MA-4 | Dipilih per SKU berdasarkan RMSE terendah |
-| Slow-Moving | MA-4 | Rata-rata 4 minggu terakhir |
-                """)
-
-            alert_df = hasil_df[hasil_df['Alert']].sort_values(
-                'Order Qty', ascending=False)
+            alert_df = hasil_df[hasil_df['Alert']].sort_values('Order Qty', ascending=False)
             
-            col_l, col_r = st.columns([2, 1])
+            col_l, col_r = st.columns([3, 1.2])
 
             with col_l:
-                render_section_header('🚨', 'Alert: SKU di Bawah ROP',
-                                      count=f'{len(alert_df)} SKU')
+                # Prioritas Rekomendasi Restok (Decision Cards)
                 if len(alert_df) > 0:
+                    render_section_header('⚠️', 'Rekomendasi Restok Prioritas')
+                    
+                    cols_html = '<div class="decision-grid">'
+                    # Display top 6 critical items needing action
+                    for _, item in alert_df.head(6).iterrows():
+                        sku = item['Kode Produk']
+                        nama = item['Nama Produk']
+                        stok = item['Stok Aktual']
+                        order = item['Order Qty']
+                        rop = item['ROP']
+                        kategori = item['Kategori']
+                        
+                        ratio = stok / rop if rop > 0 else 0
+                        if ratio == 0:
+                            risk_badge = '<span class="badge badge-danger">SANGAT TINGGI (HABIS)</span>'
+                        elif ratio < 0.3:
+                            risk_badge = '<span class="badge badge-danger">TINGGI</span>'
+                        else:
+                            risk_badge = '<span class="badge badge-warning">SEDANG</span>'
+                            
+                        cols_html += f'<div class="decision-card"><div class="decision-header-info"><span class="decision-sku">{sku}</span>{risk_badge}</div><div class="decision-name">{nama}</div><div class="decision-recom-block"><div class="decision-recom-title">Rekomendasi:</div><div class="decision-recom-val">BELI SEKARANG (+{int(order)} Unit)</div></div><div class="decision-footer-stats"><span>Stok: <b>{int(stok)}</b></span><span>Batas ROP: <b>{int(rop)}</b></span><span>Kategori: <b>{kategori}</b></span></div></div>'
+                    cols_html += '</div>'
+                    st.markdown(cols_html, unsafe_allow_html=True)
+                    
+                    render_section_header('🚨', 'Alert: SKU di Bawah ROP', count=f'{len(alert_df)} SKU')
                     st.markdown(f"""
                     <div class="alert-banner">
                         <span class="alert-icon">⚠️</span>
@@ -679,7 +741,7 @@ if file_transaksi and file_stok:
 
                     st.dataframe(
                         alert_display,
-                        width='stretch',
+                        use_container_width=True,
                         hide_index=True,
                         column_config={
                             'Order Qty': st.column_config.NumberColumn(
@@ -715,21 +777,39 @@ if file_transaksi and file_stok:
                 render_section_header('🤖', 'Breakdown Engine')
                 render_engine_donut(hasil_df)
 
+                # Panel transparansi klasifikasi
+                total_minggu = int(sku_class['Total_Minggu'].iloc[0])
+                threshold    = int(sku_class['Threshold'].iloc[0])
+                fast_cnt     = int((hasil_df['Kategori'] == 'Fast-Moving').sum())
+                slow_cnt     = int((hasil_df['Kategori'] == 'Slow-Moving').sum())
+
+                with st.expander("ℹ️ Klasifikasi Fast/Slow Moving", expanded=True):
+                    st.markdown(f"""
+                    **Kriteria Klasifikasi:**
+                    - Histori transaksi mencakup **{total_minggu} minggu**
+                    - SKU aktif **≥ {threshold} minggu** → **Fast-Moving** ({fast_cnt} SKU)
+                    - SKU aktif **< {threshold} minggu** → **Slow-Moving** ({slow_cnt} SKU)
+                    
+                    **Implikasi Engine:**
+                    - **Fast-Moving**: Seleksi XGBoost / MA-4 berdasarkan RMSE terendah.
+                    - **Slow-Moving**: Prediksi otomatis menggunakan MA-4.
+                    """)
+
         # ── TAB 2: DAFTAR REKOMENDASI LENGKAP ──────────────────────────
         with tab_recs:
             render_section_header('📋', 'Daftar Rekomendasi Pengadaan',
                                   count=f'{len(hasil_df)} SKU')
 
             # Search and filters layout
-            c_f1, c_f2, c_f3, c_f4 = st.columns([2, 1, 1, 1])
+            c_f1, c_f2, c_f3, c_f4 = st.columns([2.5, 1, 1, 1])
             with c_f1:
                 search_query = st.text_input("🔍 Cari SKU atau Nama Produk:", "", key="search_sku_input")
             with c_f2:
-                filter_status = st.selectbox("🚦 Urgensi Stok:", ["Semua", "Perlu Order", "Aman"], key="filter_status_select")
+                filter_status = st.selectbox("Urutan Urgensi:", ["Semua", "Perlu Order", "Aman"], key="filter_status_select")
             with c_f3:
-                filter_engine = st.selectbox("🤖 Model Peramal:", ["Semua", "XGBoost", "MA-4"], key="filter_engine_select")
+                filter_engine = st.selectbox("Model Peramal:", ["Semua", "XGBoost", "MA-4"], key="filter_engine_select")
             with c_f4:
-                filter_kategori = st.selectbox("📊 Kategori:", ["Semua", "Fast-Moving", "Slow-Moving"], key="filter_kategori_select")
+                filter_kategori = st.selectbox("Kategori:", ["Semua", "Fast-Moving", "Slow-Moving"], key="filter_kategori_select")
 
             full_display = add_status_column(hasil_df)
             full_display['Level Stok'] = hasil_df.apply(
@@ -760,7 +840,7 @@ if file_transaksi and file_stok:
 
             st.dataframe(
                 filtered_df.sort_values('Order Qty', ascending=False),
-                width='stretch',
+                use_container_width=True,
                 hide_index=True,
                 column_config={
                     'Order Qty': st.column_config.NumberColumn(
@@ -786,7 +866,6 @@ if file_transaksi and file_stok:
             )
 
             # Styled download section
-            st.markdown('<div class="download-section"></div>', unsafe_allow_html=True)
             csv_data = filtered_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label='📥 Download Hasil Rekomendasi (CSV)',
@@ -827,51 +906,56 @@ if file_transaksi and file_stok:
         # ── Footer ─────────────────────────────────────────────────────
         st.markdown("""
         <div class="footer-info">
-            DSS Apotek Shaka Farma &middot; Hybrid Engine (XGBoost + MA-4)
+            Sistem Prediksi Restock Obat Apotek Shaka Farma &middot; Hybrid Engine (XGBoost + MA-4)
             &middot; Safety Stock Z=1.65
         </div>
         """, unsafe_allow_html=True)
 
 else:
-    # ── Hero / Welcome Section ─────────────────────────────────────────
+    # ── Landing / Welcome Section ───────────────────────────────────────
     st.markdown("""
     <div class="hero-container">
-        <h2>Selamat Datang di DSS Apotek Shaka Farma</h2>
+        <h2>Sistem Prediksi Restock Obat</h2>
         <p>
-            Sistem cerdas untuk memprediksi kebutuhan stok obat dan
-            memberikan rekomendasi pengadaan berdasarkan analisis
-            data penjualan.
+            Platform pengambilan keputusan cerdas untuk memproyeksikan kebutuhan 
+            stok obat mingguan dan meminimalkan risiko kekosongan stok obat (stockout).
         </p>
         <div class="steps-grid">
             <div class="step-card">
                 <span class="step-icon">📤</span>
                 <span class="step-num">1</span>
-                <div class="step-title">Upload Data</div>
-                <div class="step-desc">File transaksi penjualan & stok aktual</div>
+                <div class="step-title">Upload Transaksi</div>
+                <div class="step-desc">Unggah file riwayat penjualan kasir terbaru</div>
+            </div>
+            <div class="step-card">
+                <span class="step-icon">📊</span>
+                <span class="step-num">2</span>
+                <div class="step-title">Upload Stok</div>
+                <div class="step-desc">Unggah data sisa stok fisik apotek</div>
             </div>
             <div class="step-card">
                 <span class="step-icon">🤖</span>
-                <span class="step-num">2</span>
-                <div class="step-title">Analisis AI</div>
-                <div class="step-desc">Prediksi demand dengan XGBoost & MA-4</div>
+                <span class="step-num">3</span>
+                <div class="step-title">Analisis Prediksi</div>
+                <div class="step-desc">Proyeksi demand otomatis berbasis AI & MA-4</div>
             </div>
             <div class="step-card">
                 <span class="step-icon">📋</span>
-                <span class="step-num">3</span>
+                <span class="step-num">4</span>
                 <div class="step-title">Rekomendasi</div>
-                <div class="step-desc">Daftar order & alert stok kritis</div>
+                <div class="step-desc">Dapatkan rekomendasi & saran jumlah order</div>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.sidebar.markdown("""
-    <div style="margin-top: 20px; padding: 12px; background: rgba(16,185,129,0.06);
-         border: 1px solid rgba(16,185,129,0.15); border-radius: 8px;
-         font-size: 0.78rem; color: #94A3B8; line-height: 1.5;">
-        📌 <strong>Cara Penggunaan:</strong><br>
-        1. Upload file transaksi terbaru<br>
-        2. Upload file stok aktual<br>
-        3. Sistem akan otomatis menganalisis
+    <div style="margin-top: 10px; padding: 14px; background: rgba(37,99,235,0.04);
+         border: 1px solid rgba(37,99,235,0.15); border-radius: 8px;
+         font-size: 0.8rem; color: #475569; line-height: 1.5;">
+        📌 <strong>Panduan Cepat:</strong><br>
+        1. Upload file riwayat transaksi di panel kiri.<br>
+        2. Upload file stok aktual terbaru.<br>
+        3. Sistem akan otomatis memproses dan menampilkan hasil prediksi serta rekomendasi restok.
     </div>
-    """, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
