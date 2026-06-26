@@ -38,7 +38,8 @@ def load_assets():
 model, dataset, sku_eval, label, winsor_bounds, sku_class = load_assets()
 
 FEATURES  = ['Lag_1','Lag_2','Lag_3','Lag_4',
-            'Rolling_Mean_4','Bulan','Pekan_Ke','Rata_Historis_SKU']
+            'Rolling_Mean_2','Rolling_Mean_4','Rolling_Std_4',
+            'Bulan','Pekan_Ke','Rata_Historis_SKU','Is_Ramadan']
 TARGET    = 'Jumlah'
 Z         = 1.65
 
@@ -267,15 +268,24 @@ def update_features(df_new_raw, dataset_hist, label, winsor_bounds):
     combined['Rolling_Mean_4'] = combined.groupby('Kode Produk')['Jumlah'].transform(
         lambda x: x.shift(1).rolling(4).mean()
     )
+    combined['Rolling_Mean_2'] = combined.groupby('Kode Produk')['Jumlah'].transform(
+        lambda x: x.shift(1).rolling(2).mean()
+    )
+    combined['Rolling_Std_4'] = combined.groupby('Kode Produk')['Jumlah'].transform(
+        lambda x: x.shift(1).rolling(4).std()
+    )
     combined['Bulan']    = combined['Tanggal'].dt.month
     combined['Pekan_Ke'] = combined['Tanggal'].dt.isocalendar().week.astype(int)
+    ramadan_start = pd.Timestamp('2026-03-10')
+    ramadan_end   = pd.Timestamp('2026-04-08')
+    combined['Is_Ramadan'] = combined['Tanggal'].between(ramadan_start, ramadan_end).astype(int)
 
     # Ambil baris terbaru per SKU
     latest = combined.groupby('Kode Produk').last().reset_index()
     latest = latest.dropna(subset=FEATURES)
 
     # Winsorization pakai bounds dari training
-    for col in ['Lag_1','Lag_2','Lag_3','Lag_4','Rolling_Mean_4']:
+    for col in ['Lag_1','Lag_2','Lag_3','Lag_4','Rolling_Mean_2','Rolling_Mean_4','Rolling_Std_4']:
         if col in winsor_bounds:
             latest[col] = latest[col].astype(float)
             for sku in latest['Kode Produk']:
@@ -958,4 +968,4 @@ else:
         2. Upload file stok aktual terbaru.<br>
         3. Sistem akan otomatis memproses dan menampilkan hasil prediksi serta rekomendasi restok.
     </div>
-    """, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
